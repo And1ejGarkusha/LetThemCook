@@ -80,6 +80,10 @@
 				"Linux",
 				"Mac"
 			]
+		},
+		{
+			"Name": "DatasmithFBXImporter",
+			"Enabled": true
 		}
 	]
 }
