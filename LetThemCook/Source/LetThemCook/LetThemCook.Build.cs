@@ -18,6 +18,7 @@ public class LetThemCook : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
+			"SlateCore",
 			"Slate"
 		});
 
