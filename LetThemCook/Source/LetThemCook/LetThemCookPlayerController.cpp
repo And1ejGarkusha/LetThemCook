@@ -9,16 +9,27 @@
 #include "Blueprint/UserWidget.h"
 #include "LetThemCook.h"
 #include "Widgets/Input/SVirtualJoystick.h"
+#include "Interaction/UI/InteractionPromptWidget.h"
 
 ALetThemCookPlayerController::ALetThemCookPlayerController()
 {
 	// set the player camera manager class
 	PlayerCameraManagerClass = ALetThemCookCameraManager::StaticClass();
+	InteractionFeedbackWidgetClass = UInteractionPromptWidget::StaticClass();
 }
 
 void ALetThemCookPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	if (IsLocalPlayerController() && bShowInteractionFeedback && InteractionFeedbackWidgetClass)
+	{
+		InteractionFeedbackWidget = CreateWidget<UUserWidget>(this, InteractionFeedbackWidgetClass);
+		if (InteractionFeedbackWidget)
+		{
+			InteractionFeedbackWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+			InteractionFeedbackWidget->AddToPlayerScreen(20);
+		}
+	}
 
 	
 	// only spawn touch controls on local player controllers
@@ -39,6 +50,16 @@ void ALetThemCookPlayerController::BeginPlay()
 		}
 
 	}
+}
+
+void ALetThemCookPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (InteractionFeedbackWidget)
+	{
+		InteractionFeedbackWidget->RemoveFromParent();
+		InteractionFeedbackWidget = nullptr;
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void ALetThemCookPlayerController::SetupInputComponent()

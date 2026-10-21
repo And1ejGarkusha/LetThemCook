@@ -42,12 +42,23 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UUserWidget> MobileControlsWidget;
 
+	/** Optional local feedback; can be replaced with the project's own widget. */
+	UPROPERTY(EditDefaultsOnly, Category="Interaction|UI")
+	bool bShowInteractionFeedback = true;
+
+	UPROPERTY(EditDefaultsOnly, Category="Interaction|UI")
+	TSubclassOf<UUserWidget> InteractionFeedbackWidgetClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UUserWidget> InteractionFeedbackWidget;
+
 	/** If true, the player will use UMG touch controls even if not playing on mobile platforms */
 	UPROPERTY(EditAnywhere, Config, Category = "Input|Touch Controls")
 	bool bForceTouchControls = false;
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;

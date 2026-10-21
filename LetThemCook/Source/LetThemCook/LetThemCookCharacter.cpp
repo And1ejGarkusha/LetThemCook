@@ -9,9 +9,14 @@
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LetThemCook.h"
+#include "Interaction/InteractorComponent.h"
+#include "PhysicsEngine/PhysicsHandleComponent.h"
+#include "InputAction.h"
+#include "UObject/ConstructorHelpers.h"
 
 ALetThemCookCharacter::ALetThemCookCharacter()
 {
+	bReplicates = true;
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
 	
@@ -42,7 +47,56 @@ ALetThemCookCharacter::ALetThemCookCharacter()
 	// Configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+
+	InteractionPhysicsHandle = CreateDefaultSubobject<UPhysicsHandleComponent>(TEXT("InteractionPhysicsHandle"));
+	Interactor = CreateDefaultSubobject<UInteractorComponent>(TEXT("Interactor"));
+	Interactor->ViewComponent.ComponentProperty = GET_MEMBER_NAME_CHECKED(ALetThemCookCharacter, FirstPersonCameraComponent);
+
+	static ConstructorHelpers::FObjectFinder<UInputAction> InteractAsset(TEXT("/Game/Input/Actions/IA_Interact.IA_Interact"));
+	InteractAction = InteractAsset.Object;
+
+	// Keep the project's capsule, speed, jump, and camera settings. Only tune
+	// character/body contact so light movable items stay stable underfoot.
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	Movement->bEnablePhysicsInteraction = true;
+	Movement->StandingDownwardForceScale = 0.f;
+	Movement->TouchForceFactor = 0.f;
+	Movement->RepulsionForce = 0.f;
+	Movement->InitialPushForceFactor = 200.f;
+	Movement->PushForceFactor = 10000.f;
+	Movement->bPushForceScaledToMass = false;
+	Movement->bPushForceUsingZOffset = true;
+	Movement->PushForcePointZOffsetFactor = 0.f;
+	Movement->bImpartBaseAngularVelocity = false;
 }
+
+void ALetThemCookCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+	// This project's camera is attached to the animated head. A dedicated
+	// server must refresh that pose too, otherwise it traces from a stale socket.
+	if (HasAuthority())
+	{
+		FirstPersonMesh->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	}
+	Interactor->AddTickPrerequisiteComponent(FirstPersonMesh);
+}
+
+FVector ALetThemCookCharacter::GetPawnViewLocation() const
+{
+	return FirstPersonCameraComponent ? FirstPersonCameraComponent->GetComponentLocation() : Super::GetPawnViewLocation();
+}
+
+void ALetThemCookCharacter::UnPossessed()
+{
+	Interactor->CancelInteraction();
+	Interactor->ReleaseHeldItem();
+	Super::UnPossessed();
+}
+
+void ALetThemCookCharacter::InteractionStarted() { Interactor->BeginInteraction(); }
+void ALetThemCookCharacter::InteractionCompleted() { Interactor->EndInteraction(); }
+void ALetThemCookCharacter::InteractionCanceled() { Interactor->CancelInteraction(); }
 
 void ALetThemCookCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {	
@@ -59,6 +113,13 @@ void ALetThemCookCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
 		// Looking/Aiming
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &ALetThemCookCharacter::LookInput);
 		EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &ALetThemCookCharacter::LookInput);
+
+		if (InteractAction)
+		{
+			EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Started, this, &ALetThemCookCharacter::InteractionStarted);
+			EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Completed, this, &ALetThemCookCharacter::InteractionCompleted);
+			EnhancedInputComponent->BindAction(InteractAction, ETriggerEvent::Canceled, this, &ALetThemCookCharacter::InteractionCanceled);
+		}
 	}
 	else
 	{
