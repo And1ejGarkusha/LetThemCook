@@ -2,7 +2,10 @@
 #include "GrabbableComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "PhysicsEngine/PhysicsHandleComponent.h"
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -187,6 +190,9 @@ bool UInteractorComponent::TryGrab(UGrabbableComponent* Item)
         Item->SetHolder(nullptr);
         return false;
     }
+    bExtractingItem = !IsClearOfHolder(Body);
+    bReleasePending = false;
+    PendingThrowSpeed = 0.f;
     GetOwner()->ForceNetUpdate();
     OnRep_HeldItem();
     return true;
@@ -194,11 +200,44 @@ bool UInteractorComponent::TryGrab(UGrabbableComponent* Item)
 
 void UInteractorComponent::ReleaseHeldItem() { ReleaseInternal(0.f); }
 
-void UInteractorComponent::ReleaseInternal(float ThrowSpeed)
+FVector UInteractorComponent::GetSafeHoldLocation(const UPrimitiveComponent* Body, const FVector& Location, const FQuat& Rotation) const
+{
+    const UCapsuleComponent* Capsule = Cast<UCapsuleComponent>(GetOwner()->GetRootComponent());
+    if (!Capsule || !Body) return Location;
+    // Enclose the item's entire bounds, including off-centre pivots. The sphere
+    // also remains safe while the physics handle rotates the body between poses.
+    const FBoxSphereBounds Bounds = Body->CalcBounds(FTransform(Rotation, Location, Body->GetComponentScale()));
+    const FVector Up = Capsule->GetUpVector();
+    const FVector Center = Capsule->GetComponentLocation();
+    const float Segment = FMath::Max(0.f, Capsule->GetScaledCapsuleHalfHeight() - Capsule->GetScaledCapsuleRadius());
+    const FVector Closest = Center + Up * FMath::Clamp(FVector::DotProduct(Bounds.Origin - Center, Up), -Segment, Segment);
+    const FVector Offset = Bounds.Origin - Closest;
+    const float Clearance = Capsule->GetScaledCapsuleRadius() + Bounds.SphereRadius + 3.f;
+    if (Offset.SizeSquared() >= FMath::Square(Clearance)) return Location;
+    const FVector Direction = Offset.GetSafeNormal(UE_SMALL_NUMBER, GetOwner()->GetActorForwardVector());
+    return Location + Closest + Direction * Clearance - Bounds.Origin;
+}
+
+bool UInteractorComponent::IsClearOfHolder(const UPrimitiveComponent* Body) const
+{
+    return !Body || GetSafeHoldLocation(Body, Body->GetComponentLocation(), Body->GetComponentQuat()).Equals(Body->GetComponentLocation(), 0.1f);
+}
+
+void UInteractorComponent::ReleaseInternal(float ThrowSpeed, bool bForce)
 {
     if (!GetOwner()->HasAuthority()) return;
     UGrabbableComponent* Item = HeldItem;
     UPrimitiveComponent* Body = IsValid(Item) ? Item->GetPhysicsBody() : nullptr;
+    // Keep the pair filtered until extraction is complete; restoring collision
+    // inside the capsule would create a depenetration impulse and launch the pawn.
+    if (Body && !bForce && !IsClearOfHolder(Body) && PhysicsHandle && PhysicsHandle->GetGrabbedComponent() == Body)
+    {
+        bReleasePending = true;
+        PendingThrowSpeed = ThrowSpeed;
+        return;
+    }
+    bReleasePending = false;
+    bExtractingItem = false;
     if (PhysicsHandle) PhysicsHandle->ReleaseComponent();
     HeldItem = nullptr;
     OnRep_HeldItem();
@@ -235,6 +274,14 @@ void UInteractorComponent::UpdateCollisionExclusion()
     if (IsValid(HeldItem) && PawnBody)
     {
         UPrimitiveComponent* Body = HeldItem->GetPhysicsBody();
+        if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
+        {
+            if (Character->GetMovementBase() == Body && (Character->HasAuthority() || Character->IsLocallyControlled()))
+            {
+                Character->SetBase(nullptr);
+                Character->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+            }
+        }
         bWasAlreadyMoveIgnored = PawnBody->GetMoveIgnoreActors().Contains(HeldItem->GetOwner());
         PawnBody->IgnoreActorWhenMoving(HeldItem->GetOwner(), true);
         if (Body && CollisionExclusion)
@@ -276,24 +323,72 @@ void UInteractorComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
         UPrimitiveComponent* Body = IsValid(HeldItem) ? HeldItem->GetPhysicsBody() : nullptr;
         if (!Body || !PhysicsHandle || PhysicsHandle->GetGrabbedComponent() != Body || !HeldItem->IsPhysicsSetupValid())
         {
-            ReleaseInternal(0.f);
+            ReleaseInternal(0.f, true);
             return;
         }
         FVector Origin; FRotator Rotation;
         GetInteractionView(Origin, Rotation);
-        const FVector Target = Origin + Rotation.Vector() * FMath::Clamp(HoldDistance, 30.f, InteractionDistance);
+        FVector Target = Origin + Rotation.Vector() * FMath::Clamp(HoldDistance, 30.f, InteractionDistance);
+        if (const UCapsuleComponent* Capsule = Cast<UCapsuleComponent>(GetOwner()->GetRootComponent()))
+        {
+            // Looking down must not request an unreachable target under the feet.
+            const FBoxSphereBounds Bounds = Body->CalcBounds(FTransform(Rotation.Quaternion() * GrabRotationOffset, Target, Body->GetComponentScale()));
+            const FVector Up = Capsule->GetUpVector();
+            const float Height = FVector::DotProduct(Bounds.Origin - Capsule->GetComponentLocation(), Up);
+            const float MinimumHeight = -Capsule->GetScaledCapsuleHalfHeight() + Bounds.SphereRadius + 3.f;
+            Target += Up * FMath::Max(0.f, MinimumHeight - Height);
+        }
         if (FVector::DistSquared(Body->GetComponentLocation(), Target) > FMath::Square(FMath::Max(50.f, BreakDistance)))
         {
             ReleaseInternal(0.f);
             return;
         }
-        PhysicsHandle->SetTargetLocationAndRotation(Target, (Rotation.Quaternion() * GrabRotationOffset).Rotator());
+        if (bReleasePending && IsClearOfHolder(Body))
+        {
+            ReleaseInternal(PendingThrowSpeed);
+            return;
+        }
+        const FQuat TargetRotation = Rotation.Quaternion() * GrabRotationOffset;
+        const FVector Current = Body->GetComponentLocation();
+        const FVector SafeCurrent = GetSafeHoldLocation(Body, Current, Body->GetComponentQuat());
+        if (IsClearOfHolder(Body)) bExtractingItem = false;
+        if (!bExtractingItem && !Current.Equals(SafeCurrent, 0.1f))
+        {
+            // Character movement can overtake a lagging physics handle. Correct
+            // only that overlap, without applying forces back into the character.
+            const FVector Normal = (SafeCurrent - Current).GetSafeNormal();
+            FComponentQueryParams Params(SCENE_QUERY_STAT(HeldItemClearance), GetOwner());
+            Params.AddIgnoredActor(Body->GetOwner());
+            TArray<FHitResult> Hits;
+            GetWorld()->ComponentSweepMulti(Hits, Body, Current, SafeCurrent, Body->GetComponentQuat(), Params);
+            float Fraction = 1.f;
+            for (const FHitResult& Hit : Hits)
+            {
+                if (Hit.bBlockingHit) Fraction = FMath::Min(Fraction, Hit.bStartPenetrating ? 0.f : FMath::Max(0.f, Hit.Time - 0.01f));
+            }
+            Body->SetWorldLocation(FMath::Lerp(Current, SafeCurrent, Fraction), false, nullptr, ETeleportType::TeleportPhysics);
+            const FVector Velocity = Body->GetPhysicsLinearVelocity();
+            Body->SetPhysicsLinearVelocity(Velocity - Normal * FMath::Min(0.f, FVector::DotProduct(Velocity, Normal)));
+        }
+        const FVector Goal = GetSafeHoldLocation(Body, Target, TargetRotation);
+        const float Step = 600.f * FMath::Clamp(DeltaTime, 0.f, 0.05f);
+        FVector Next = GetSafeHoldLocation(Body, SafeCurrent + (Goal - SafeCurrent).GetClampedToMaxSize(Step), TargetRotation);
+        // A diametrically opposite goal needs a tangent to avoid getting stuck
+        // against the capsule. This also lets a cube slide out from underfoot.
+        if ((Next - SafeCurrent).SizeSquared() < 0.01f && FVector::DistSquared(Goal, SafeCurrent) > 100.f)
+        {
+            FVector Normal = (SafeCurrent - GetOwner()->GetActorLocation()).GetSafeNormal();
+            FVector Tangent = FVector::VectorPlaneProject(GetOwner()->GetActorForwardVector(), Normal).GetSafeNormal();
+            if (Tangent.IsNearlyZero()) Tangent = FVector::CrossProduct(Normal, GetOwner()->GetActorRightVector()).GetSafeNormal();
+            Next = GetSafeHoldLocation(Body, SafeCurrent + Tangent * Step, TargetRotation);
+        }
+        PhysicsHandle->SetTargetLocationAndRotation(Next, TargetRotation.Rotator());
     }
 }
 
 void UInteractorComponent::EndPlay(const EEndPlayReason::Type Reason)
 {
-    if (GetOwner()->HasAuthority()) ReleaseInternal(0.f);
+    if (GetOwner()->HasAuthority()) ReleaseInternal(0.f, true);
     if (CollisionExclusion) CollisionExclusion->DestroyComponent();
     Super::EndPlay(Reason);
 }

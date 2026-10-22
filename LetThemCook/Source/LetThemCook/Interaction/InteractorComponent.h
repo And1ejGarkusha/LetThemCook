@@ -8,6 +8,7 @@ class UInteractableComponent;
 class UGrabbableComponent;
 class UPhysicsHandleComponent;
 class UPhysicsConstraintComponent;
+class UPrimitiveComponent;
 struct FHitResult;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FInteractionFocusChanged, UInteractableComponent*, Target);
@@ -86,6 +87,9 @@ private:
     TWeakObjectPtr<UGrabbableComponent> PressedHeldItem;
     FQuat GrabRotationOffset = FQuat::Identity;
     FText PreviousPrompt;
+    bool bExtractingItem = false;
+    bool bReleasePending = false;
+    float PendingThrowSpeed = 0.f;
     bool bLocalPressed = false;
     bool bServerPressed = false;
     bool bWasAlreadyMoveIgnored = false;
@@ -96,7 +100,9 @@ private:
     bool IsLocallyControlled() const;
     UInteractableComponent* TraceTarget(FHitResult* OutHit = nullptr) const;
     void UpdateCollisionExclusion();
-    void ReleaseInternal(float ThrowSpeed);
+    FVector GetSafeHoldLocation(const UPrimitiveComponent* Body, const FVector& Location, const FQuat& Rotation) const;
+    bool IsClearOfHolder(const UPrimitiveComponent* Body) const;
+    void ReleaseInternal(float ThrowSpeed, bool bForce = false);
     UFUNCTION() void OnRep_HeldItem();
     UFUNCTION(Server, Reliable) void ServerBeginInteraction(UInteractableComponent* Candidate);
     UFUNCTION(Server, Reliable) void ServerEndInteraction();
