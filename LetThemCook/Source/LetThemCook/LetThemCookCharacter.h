@@ -11,6 +11,8 @@ class UInputComponent;
 class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
+class UInteractorComponent;
+class UPhysicsHandleComponent;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
@@ -19,7 +21,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
  *  A basic first person character
  */
 UCLASS(abstract)
-class ALetThemCookCharacter : public ACharacter
+class LETTHEMCOOK_API ALetThemCookCharacter : public ACharacter
 {
 	GENERATED_BODY()
 
@@ -31,7 +33,16 @@ class ALetThemCookCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* FirstPersonCameraComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Interaction", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UInteractorComponent> Interactor;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Interaction", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UPhysicsHandleComponent> InteractionPhysicsHandle;
+
 protected:
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Input")
+	TObjectPtr<UInputAction> InteractAction;
 
 	/** Jump Input Action */
 	UPROPERTY(EditAnywhere, Category ="Input")
@@ -51,8 +62,18 @@ protected:
 	
 public:
 	ALetThemCookCharacter();
+	virtual FVector GetPawnViewLocation() const override;
+	virtual void UnPossessed() override;
+	virtual void SetBase(UPrimitiveComponent* NewBase, const FName BoneName = NAME_None, bool bNotifyActor = true) override;
+
+	UFUNCTION(BlueprintPure, Category="Interaction")
+	UInteractorComponent* GetInteractorComponent() const { return Interactor; }
 
 protected:
+	virtual void BeginPlay() override;
+	void InteractionStarted();
+	void InteractionCompleted();
+	void InteractionCanceled();
 
 	/** Called from Input Actions for movement input */
 	void MoveInput(const FInputActionValue& Value);
