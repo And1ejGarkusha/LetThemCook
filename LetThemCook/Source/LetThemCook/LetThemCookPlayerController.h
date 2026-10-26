@@ -8,6 +8,12 @@
 
 class UInputMappingContext;
 class UUserWidget;
+class UTabletShopComponent;
+class UTabletOrdersComponent;
+class STabletScreen;
+class ATabletDevice;
+class ACustomerServicePoint;
+class UInputAction;
 
 /**
  *  Simple first person Player Controller
@@ -24,7 +30,51 @@ public:
 	/** Constructor */
 	ALetThemCookPlayerController();
 
+public:
+    UFUNCTION(Exec)
+    void ToggleTablet();
+    void CloseTablet();
+
+    UFUNCTION(BlueprintPure, Category="Tablet|Orders")
+    UTabletOrdersComponent* GetTabletOrders() const { return TabletOrders; }
+
+    /** Interaction gameplay calls this with the held cooked-food actor. Server rechecks distance and contents. */
+    UFUNCTION(BlueprintCallable, Category="Customers")
+    void ServeCustomer(ACustomerServicePoint* Counter, AActor* Food);
+
+    /** Console: TabletDebugOrder [burger|custom|fries|drink|combo] [seconds]. Development builds only. */
+    UFUNCTION(Exec)
+    void TabletDebugOrder(FString Preset = TEXT("burger"), float Seconds = 180.f);
+
 protected:
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Input|Customers")
+    TObjectPtr<UInputAction> ServeCustomerAction;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Input|Customers")
+    TObjectPtr<UInputMappingContext> CustomerInputContext;
+    void OnServeCustomerPressed();
+    AActor* GetHeldCustomerFood() const;
+    UFUNCTION(Server, Reliable)
+    void ServerServeHeldCustomerFood();
+    double LastCustomerServeTime = -1;
+    UFUNCTION(Server, Reliable)
+    void ServerServeCustomer(ACustomerServicePoint* Counter, AActor* Food);
+    UFUNCTION(Server, Reliable)
+    void ServerTabletDebugOrder(const FString& Preset, float Seconds);
+
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    virtual void OnUnPossess() override;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Tablet")
+    TObjectPtr<UTabletShopComponent> TabletShop;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Tablet")
+    TObjectPtr<UTabletOrdersComponent> TabletOrders;
+
+    TSharedPtr<STabletScreen> TabletScreen;
+    UPROPERTY(Transient)
+    TObjectPtr<ATabletDevice> TabletDevice;
+    bool bTabletOpen = false;
+    virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	/** Input Mapping Contexts */
 	UPROPERTY(EditAnywhere, Category="Input|Input Mappings")

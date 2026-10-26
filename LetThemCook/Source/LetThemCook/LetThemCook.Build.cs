@@ -15,9 +15,11 @@ public class LetThemCook : ModuleRules
 			"InputCore",
 			"EnhancedInput",
 			"AIModule",
+			"NavigationSystem",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
+			"SlateCore",
 			"Slate"
 		});
 
