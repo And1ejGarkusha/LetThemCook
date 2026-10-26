@@ -37,6 +37,8 @@ public:
     bool WasLastPurchaseSuccessful() const { return bLastPurchaseSuccessful; }
     void Purchase(FName ProductId, int32 Quantity);
     void PurchaseCart(const TArray<FTabletOrderItem>& Items);
+    UFUNCTION(BlueprintPure, Category="Tablet|Economy") int32 GetWalletBalance() const { return Balance; }
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Tablet|Economy") bool CreditSale(int32 Amount);
     FTabletPurchaseResult OnPurchaseResult;
     FTabletCatalogChanged OnCatalogChanged;
 

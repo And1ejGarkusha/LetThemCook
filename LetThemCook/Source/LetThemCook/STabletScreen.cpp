@@ -1,10 +1,14 @@
 #include "STabletScreen.h"
+#include "STabletOrders.h"
+#include "TabletStyle.h"
+#include "TabletOrdersComponent.h"
 #include "InputCoreTypes.h"
 #include "Engine/Texture2D.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -12,30 +16,19 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Styling/CoreStyle.h"
 #include "Brushes/SlateColorBrush.h"
-namespace TabletPalette
-{
-    const FLinearColor Paper = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("2A1D0C")));
-    const FLinearColor Ink = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("FFF3C5")));
-    const FLinearColor Muted = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("FFEBB1")));
-    const FLinearColor Panel = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("483114")));
-    const FLinearColor Line = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("916222")));
-    const FLinearColor Accent = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("E8AF12")));
-    const FLinearColor ActionInk = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("221704")));
-    TSharedRef<STextBlock> Label(const FText& Text, int32 Size = 16, bool Bold = false)
-    {
-        return SNew(STextBlock).Text(Text).ColorAndOpacity(Ink).Font(FCoreStyle::GetDefaultFontStyle(Bold ? "Bold" : "Regular", Size));
-    }
-}
 void STabletScreen::Construct(const FArguments& Args)
 {
     using namespace TabletPalette;
-    Shop = Args._Shop; Close = Args._OnClose;
+    Shop = Args._Shop; Orders = Args._Orders; Close = Args._OnClose;
     CommandKeyDown = Args._OnCommandKeyDown;
     CommandKeyUp = Args._OnCommandKeyUp;
     ButtonStyle.SetNormal(FSlateColorBrush(Panel)).SetHovered(FSlateColorBrush(Line)).SetPressed(FSlateColorBrush(Paper));
     ButtonStyle.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0));
+    TileStyle = ButtonStyle;
+    LockedStyle = ButtonStyle;
+    LockedStyle.SetNormal(FSlateColorBrush(Inset)).SetHovered(FSlateColorBrush(Inset)).SetPressed(FSlateColorBrush(Inset));
     ActionStyle = ButtonStyle;
-    ActionStyle.SetNormal(FSlateColorBrush(Accent)).SetHovered(FSlateColorBrush(FLinearColor::FromSRGBColor(FColor(255,197,37)))).SetPressed(FSlateColorBrush(Line));
+    ActionStyle.SetNormal(FSlateColorBrush(Accent)).SetHovered(FSlateColorBrush(AccentHover)).SetPressed(FSlateColorBrush(AccentHover));
     InputStyle = FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
     InputStyle.SetBackgroundImageNormal(FSlateColorBrush(Paper)).SetBackgroundImageHovered(FSlateColorBrush(Paper)).SetBackgroundImageFocused(FSlateColorBrush(Paper)).SetBackgroundImageReadOnly(FSlateColorBrush(Paper));
     InputStyle.SetForegroundColor(Ink).SetPadding(FMargin(4, 6));
@@ -43,6 +36,16 @@ void STabletScreen::Construct(const FArguments& Args)
     UpgradesTexture.Reset(LoadObject<UTexture2D>(nullptr, TEXT("/Game/UI/Tablet/T_Upgrades.T_Upgrades")));
     IngredientsBrush.SetResourceObject(IngredientsTexture.Get()); IngredientsBrush.ImageSize = FVector2D(64,64); IngredientsBrush.DrawAs = ESlateBrushDrawType::Image;
     UpgradesBrush.SetResourceObject(UpgradesTexture.Get()); UpgradesBrush.ImageSize = FVector2D(64,64); UpgradesBrush.DrawAs = ESlateBrushDrawType::Image;
+    auto LoadBrush = [this](FSlateBrush& Brush, FName Key)
+    {
+        if (Orders.IsValid()) if (UTexture2D* Texture = Orders->GetArtwork(Key))
+        {
+            Brush.SetResourceObject(Texture);
+            Brush.ImageSize = FVector2D(Texture->GetSizeX(),Texture->GetSizeY());
+            Brush.DrawAs = ESlateBrushDrawType::Image;
+        }
+    };
+    LoadBrush(OrdersBrush, TEXT("Orders")); LoadBrush(LockedBrush, TEXT("Locked")); LoadBrush(BunBrush, TEXT("Iceberg"));
     if (Shop.IsValid())
     {
         Status = Shop->GetLastPurchaseMessage();
@@ -58,17 +61,22 @@ void STabletScreen::Construct(const FArguments& Args)
             if (auto Screen = Weak.Pin()) Screen->RefreshProducts();
         });
     }
-    auto Tile = [this](const FText& Title, const FSlateBrush* Brush, bool Locked) -> TSharedRef<SWidget>
+    auto Tile = [this](const FText& Title, const FSlateBrush* Brush, int32 Page) -> TSharedRef<SWidget>
     {
-        return SNew(SBox).WidthOverride(310).HeightOverride(310)
+        const bool Locked = Page < 0;
+        return SNew(SBox).WidthOverride(320).HeightOverride(320)
         [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Line).Padding(1)
-        [SNew(SButton).ButtonStyle(&ButtonStyle).IsFocusable(false).IsEnabled(!Locked).ContentPadding(22)
-            .OnClicked_Lambda([this, Locked](){ if (!Locked) ShowIngredients(); return FReply::Handled(); })
+        [SNew(SButton).ButtonStyle(Locked ? &LockedStyle : &TileStyle).ContentPadding(24)
+            .OnClicked_Lambda([this,Page](){ if (Page == 2) ShowOrders(); else if (Page == 1) ShowIngredients(); return FReply::Handled(); })
             [SNew(SVerticalBox)
-                + SVerticalBox::Slot().AutoHeight()[TabletPalette::Label(Title,24,true)]
+                + SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Text(Title).ColorAndOpacity(Locked ? Muted : Ink).Font(PixelFont(28,true))]
                 + SVerticalBox::Slot().FillHeight(1).HAlign(HAlign_Center).VAlign(VAlign_Center)
-                [SNew(SBox).WidthOverride(180).HeightOverride(180)[SNew(SImage).Image(Brush).ColorAndOpacity(Locked ? FLinearColor(0.6f,0.6f,0.6f,1) : FLinearColor::White)]]
-                + SVerticalBox::Slot().AutoHeight()[TabletPalette::Label(Locked ? FText::FromString(TEXT("ЗАБЛОКИРОВАНО")) : FText::FromString(TEXT("Открыть каталог  →")),14,true)]
+                [SNew(SBox).WidthOverride(Page == 1 ? 195 : 112).HeightOverride(Page == 1 ? 47.45f : 112)[SNew(SImage).Image(Brush)]]
+                + SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).ColorAndOpacity(Locked ? Muted : Ink).Font(PixelFont(17))
+                    .Text_Lambda([this,Page]() { if (Page < 0) return FText::FromString(TEXT("Заблокировано"));
+                        if (Page == 1) return FText::FromString(TEXT("Закупка продуктов"));
+                        const int32 Count = Orders.IsValid() ? Orders->GetOrders().Num() : 0;
+                        return FText::FromString(Count > 0 ? FString::Printf(TEXT("Ждут выдачи: %d"), Count) : TEXT("Пока нет заказов")); })]
             ]]];
     };
     ProductRows = SNew(SVerticalBox);
@@ -78,21 +86,28 @@ void STabletScreen::Construct(const FArguments& Args)
     [SNew(SVerticalBox)
         + SVerticalBox::Slot().AutoHeight().Padding(0,0,0,24)
         [SNew(SHorizontalBox)
-            + SHorizontalBox::Slot().FillWidth(1)[Label(FText::FromString(TEXT("СНАБЖЕНИЕ КУХНИ")),22,true)]
+            + SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
+                [SNew(SButton).ButtonStyle(FCoreStyle::Get(),"NoBorder").ContentPadding(0)
+                    .OnClicked_Lambda([this]() { if (Pages->GetActiveWidgetIndex() == 2 && OrdersScreen->IsShowingDetails()) OrdersScreen->ShowList(); else Pages->SetActiveWidgetIndex(0); return FReply::Handled(); })
+                    [SNew(STextBlock).ColorAndOpacity(Muted).Font(PixelFont(15))
+                        .Text_Lambda([this]() { if (!Pages.IsValid() || Pages->GetActiveWidgetIndex() == 0) return FText::FromString(TEXT("КУХОННЫЙ ПЛАНШЕТ"));
+                            return FText::FromString(Pages->GetActiveWidgetIndex() == 2 && OrdersScreen->IsShowingDetails() ? TEXT("← Заказы") : TEXT("← Приложения")); })]]
             + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0,0,24,0)
-            [SNew(STextBlock).ColorAndOpacity(Ink).Font(FCoreStyle::GetDefaultFontStyle("Bold",18)).Text_Lambda([this](){return FText::Format(FText::FromString(TEXT("Баланс: {0}")),FText::AsNumber(Shop.IsValid()?Shop->GetBalance():0));})]
-            + SHorizontalBox::Slot().AutoWidth()[SNew(SButton).ButtonStyle(&ButtonStyle).ContentPadding(FMargin(12,8)).IsFocusable(false).OnClicked(this,&STabletScreen::CloseScreen)
-                [SNew(STextBlock).Text(Args._CloseHint).ColorAndOpacity(Ink).Font(FCoreStyle::GetDefaultFontStyle("Regular",14))]]
+            [SNew(STextBlock).ColorAndOpacity(Ink).Font(PixelFont(17)).Text_Lambda([this](){return FText::Format(FText::FromString(TEXT("Баланс: {0}")),FText::AsNumber(Shop.IsValid()?Shop->GetBalance():0));})]
+            + SHorizontalBox::Slot().AutoWidth()[SNew(SButton).ButtonStyle(&ButtonStyle).ContentPadding(FMargin(12,8)).IsFocusable(false).OnClicked(this,&STabletScreen::CloseScreen)[SNew(STextBlock).Text(Args._CloseHint).ColorAndOpacity(Ink).Font(PixelFont(15))]]
         ]
         + SVerticalBox::Slot().FillHeight(1)
         [SAssignNew(Pages,SWidgetSwitcher)
             + SWidgetSwitcher::Slot()
             [SNew(SVerticalBox)
-                + SVerticalBox::Slot().AutoHeight()[Label(FText::FromString(TEXT("Закупки")),32,true)]
-                + SVerticalBox::Slot().FillHeight(1).HAlign(HAlign_Center).VAlign(VAlign_Center)
-                [SNew(SHorizontalBox)
-                    + SHorizontalBox::Slot().AutoWidth().Padding(0,0,22,0)[Tile(FText::FromString(TEXT("Ингредиенты")),&IngredientsBrush,false)]
-                    + SHorizontalBox::Slot().AutoWidth()[Tile(FText::FromString(TEXT("Улучшения")),&UpgradesBrush,true)]]
+                + SVerticalBox::Slot().AutoHeight()[TabletPalette::Text(FText::FromString(TEXT("Приложения")),40,true)]
+                + SVerticalBox::Slot().AutoHeight().Padding(0,4,0,24)[SNew(STextBlock).Text(FText::FromString(TEXT("Кухня · рабочий планшет"))).ColorAndOpacity(Muted).Font(PixelFont(17))]
+                + SVerticalBox::Slot().FillHeight(1).VAlign(VAlign_Center)
+                    [SNew(SScrollBox)+SScrollBox::Slot()[SNew(SWrapBox).UseAllottedSize(true).HAlign(HAlign_Center).InnerSlotPadding(FVector2D(24,24))
+                        + SWrapBox::Slot()[Tile(FText::FromString(TEXT("Заказы")),&OrdersBrush,2)]
+                        + SWrapBox::Slot()[Tile(FText::FromString(TEXT("Ингредиенты")),&BunBrush,1)]
+                        + SWrapBox::Slot()[Tile(FText::FromString(TEXT("Улучшения")),&LockedBrush,-1)]]]
+                + SVerticalBox::Slot().AutoHeight().Padding(0,24,0,0)[TabletPalette::Text(FText::FromString(TEXT("Выбери приложение.")),17)]
             ]
             + SWidgetSwitcher::Slot()
             [SNew(SVerticalBox)
@@ -115,9 +130,10 @@ void STabletScreen::Construct(const FArguments& Args)
                     ]]
                 ]
             ]
+            + SWidgetSwitcher::Slot()[SAssignNew(OrdersScreen,STabletOrders).Orders(Orders.Get())]
         ]
         + SVerticalBox::Slot().AutoHeight().Padding(0,16,0,0)
-        [SNew(STextBlock).ColorAndOpacity_Lambda([this](){return bSuccess?FSlateColor(TabletPalette::Muted):FSlateColor(FLinearColor(1,0.3f,0.1f));}).Text_Lambda([this](){return Shop.IsValid()&&Total()>Shop->GetBalance()?FText::FromString(TEXT("Недостаточно денег для этого заказа.")):Status;})]
+        [SNew(STextBlock).Visibility_Lambda([this]() { return Pages->GetActiveWidgetIndex() == 1 ? EVisibility::Visible : EVisibility::Collapsed; }).ColorAndOpacity_Lambda([this](){return bSuccess?FSlateColor(TabletPalette::Muted):FSlateColor(TabletPalette::Urgent);}).Text_Lambda([this](){return Shop.IsValid()&&Total()>Shop->GetBalance()?FText::FromString(TEXT("Недостаточно денег для этого заказа.")):Status;})]
     ]];
 }
 void STabletScreen::RefreshProducts()
@@ -189,6 +205,7 @@ STabletScreen::~STabletScreen()
     }
 }
 void STabletScreen::ShowIngredients(){Pages->SetActiveWidgetIndex(1);}
+void STabletScreen::ShowOrders(){OrdersScreen->ShowList();Pages->SetActiveWidgetIndex(2);}
 int32 STabletScreen::QuantityFor(FName Id)const{return Quantities.FindRef(Id);}
 int64 STabletScreen::Total()const{int64 Cost=0;if(Shop.IsValid())for(const auto& P:Shop->GetProducts())Cost+=int64(P.Price)*QuantityFor(P.Id);return Cost;}
 FText STabletScreen::Summary()const

@@ -53,6 +53,14 @@ void UTabletShopComponent::Purchase(FName ProductId, int32 Quantity)
     ServerPurchase(ProductId, Quantity);
 }
 
+bool UTabletShopComponent::CreditSale(int32 Amount)
+{
+    if (!GetOwner()->HasAuthority() || Amount < 0 || Amount > 100000) return false;
+    Balance = int32(FMath::Min(int64(MAX_int32), int64(Balance) + Amount));
+    GetOwner()->ForceNetUpdate();
+    return true;
+}
+
 void UTabletShopComponent::ServerPurchase_Implementation(FName ProductId, int32 Quantity)
 {
     FTabletOrderItem Item; Item.ProductId = ProductId; Item.Quantity = Quantity;

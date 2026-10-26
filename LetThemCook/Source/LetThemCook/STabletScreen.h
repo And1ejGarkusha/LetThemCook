@@ -8,11 +8,14 @@
 class UTexture2D;
 class SWidgetSwitcher;
 class SVerticalBox;
+class UTabletOrdersComponent;
+class STabletOrders;
 class STabletScreen : public SCompoundWidget
 {
 public:
-    SLATE_BEGIN_ARGS(STabletScreen) {}
+    SLATE_BEGIN_ARGS(STabletScreen) : _Shop(nullptr), _Orders(nullptr) {}
         SLATE_ARGUMENT(UTabletShopComponent*, Shop)
+        SLATE_ARGUMENT(UTabletOrdersComponent*, Orders)
         SLATE_EVENT(FSimpleDelegate, OnClose)
         SLATE_EVENT(FOnKeyDown, OnCommandKeyDown)
         SLATE_EVENT(FOnKeyDown, OnCommandKeyUp)
@@ -24,20 +27,25 @@ public:
     virtual FReply OnPreviewKeyDown(const FGeometry&, const FKeyEvent&) override;
     virtual FReply OnKeyUp(const FGeometry&, const FKeyEvent&) override;
     void ShowIngredients();
+    void ShowOrders();
 private:
     TWeakObjectPtr<UTabletShopComponent> Shop;
+    TWeakObjectPtr<UTabletOrdersComponent> Orders;
+    TSharedPtr<STabletOrders> OrdersScreen;
     FSimpleDelegate Close;
     FOnKeyDown CommandKeyDown;
     FOnKeyDown CommandKeyUp;
     FDelegateHandle ResultHandle;
     FDelegateHandle CatalogHandle;
-    TMap<FName, int32> Quantities;
-    TSharedPtr<SWidgetSwitcher> Pages;
     TSharedPtr<SVerticalBox> ProductRows;
     TArray<TStrongObjectPtr<UTexture2D>> ProductTextures;
     TArray<TSharedPtr<FSlateBrush>> ProductBrushes;
+    TMap<FName, int32> Quantities;
+    TSharedPtr<SWidgetSwitcher> Pages;
     TStrongObjectPtr<UTexture2D> IngredientsTexture, UpgradesTexture;
     FSlateBrush IngredientsBrush, UpgradesBrush;
+    FSlateBrush OrdersBrush, LockedBrush, BunBrush;
+    FButtonStyle TileStyle, LockedStyle;
     FButtonStyle ButtonStyle, ActionStyle;
     FEditableTextBoxStyle InputStyle;
     bool bWaiting = false;

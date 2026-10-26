@@ -3,6 +3,14 @@
 
 #include "LetThemCookPlayerController.h"
 #include "TabletShopComponent.h"
+#include "TabletOrdersComponent.h"
+#include "CustomerServicePoint.h"
+#include "CustomerNPC.h"
+#include "CustomerMealComponent.h"
+#include "PhysicsEngine/PhysicsHandleComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "EngineUtils.h"
+#include "GameFramework/Pawn.h"
 #include "STabletScreen.h"
 #include "TabletDevice.h"
 #include "Engine/World.h"
@@ -28,6 +36,11 @@
 ALetThemCookPlayerController::ALetThemCookPlayerController()
 {
 	TabletShop = CreateDefaultSubobject<UTabletShopComponent>(TEXT("TabletShop"));
+    TabletOrders = CreateDefaultSubobject<UTabletOrdersComponent>(TEXT("TabletOrders"));
+    ServeCustomerAction = CreateDefaultSubobject<UInputAction>(TEXT("ServeCustomerAction"));
+    ServeCustomerAction->ValueType = EInputActionValueType::Boolean;
+    CustomerInputContext = CreateDefaultSubobject<UInputMappingContext>(TEXT("CustomerInputContext"));
+    CustomerInputContext->MapKey(ServeCustomerAction, EKeys::RightMouseButton);
 	// set the player camera manager class
 	PlayerCameraManagerClass = ALetThemCookCameraManager::StaticClass();
 	InteractionFeedbackWidgetClass = UInteractionPromptWidget::StaticClass();
@@ -37,6 +50,72 @@ ALetThemCookPlayerController::ALetThemCookPlayerController()
     ToggleTabletAction = ToggleAction.Object;
     CloseTabletAction = CloseAction.Object;
     TabletMappingContext = TabletContext.Object;
+}
+
+void ALetThemCookPlayerController::ServeCustomer(ACustomerServicePoint* Counter, AActor* Food)
+{
+    ServerServeCustomer(Counter, Food);
+}
+
+void ALetThemCookPlayerController::ServerServeCustomer_Implementation(ACustomerServicePoint* Counter, AActor* Food)
+{
+    if (IsValid(Counter) && IsValid(Food) && Food == GetHeldCustomerFood()) Counter->TryServeMeal(this, Food);
+}
+
+AActor* ALetThemCookPlayerController::GetHeldCustomerFood() const
+{
+    const APawn* ControlledPawn = GetPawn();
+    if (!IsValid(ControlledPawn)) return nullptr;
+    TArray<UPhysicsHandleComponent*> Handles;
+    ControlledPawn->GetComponents(Handles);
+    // Gleb_Interaction uses this engine component on the server to hold physical items.
+    for (const auto* Handle : Handles)
+        if (const auto* Body = Handle->GetGrabbedComponent())
+            if (auto* Food = Body->GetOwner())
+                if (const auto* Meal = Food->FindComponentByClass<UCustomerMealComponent>(); Meal && Meal->IsReady()) return Food;
+    // Also support games that attach the carried tray directly to the pawn/hand socket.
+    TArray<AActor*> Attached;
+    ControlledPawn->GetAttachedActors(Attached, true, true);
+    for (auto* Food : Attached)
+        if (IsValid(Food))
+            if (const auto* Meal = Food->FindComponentByClass<UCustomerMealComponent>(); Meal && Meal->IsReady()) return Food;
+    return nullptr;
+}
+
+void ALetThemCookPlayerController::OnServeCustomerPressed()
+{
+    if (IsLocalPlayerController() && !bTabletOpen && GetPawn()) ServerServeHeldCustomerFood();
+}
+
+void ALetThemCookPlayerController::ServerServeHeldCustomerFood_Implementation()
+{
+    const double Now = GetWorld()->GetTimeSeconds();
+    if (LastCustomerServeTime >= 0 && Now - LastCustomerServeTime < .15) return;
+    LastCustomerServeTime = Now;
+    auto* Food = GetHeldCustomerFood();
+    if (!Food) return;
+    FVector Eyes; FRotator View;
+    GetPawn()->GetActorEyesViewPoint(Eyes, View);
+    ACustomerServicePoint* Best = nullptr;
+    float BestScore = -1;
+    for (TActorIterator<ACustomerServicePoint> It(GetWorld()); It; ++It)
+    {
+        auto* Counter = *It;
+        auto* Customer = Counter->GetCurrentCustomer();
+        if (!Counter->CanPlayerServe(this) || !IsValid(Customer) || Customer->State != ECustomerState::WaitingForFood ||
+            FVector::DistSquared(GetPawn()->GetActorLocation(), Counter->GetQueueLocation(0)) > FMath::Square(FMath::Clamp(Counter->ServingDistance, 50.f, 500.f))) continue;
+        const FVector Target = Customer->GetActorLocation() + FVector(0,0,20);
+        const FVector Offset = Target - Eyes;
+        const float Aim = FVector::DotProduct(View.Vector(), Offset.GetSafeNormal());
+        if (Aim < .92f) continue;
+        FCollisionQueryParams Params(SCENE_QUERY_STAT(CustomerServeAim), false, GetPawn());
+        Params.AddIgnoredActor(Food);
+        FHitResult Hit;
+        if (GetWorld()->LineTraceSingleByChannel(Hit, Eyes, Target, ECC_Visibility, Params) && Hit.GetActor() != Customer) continue;
+        const float Score = Aim - Offset.Size() * .0001f;
+        if (Score > BestScore) { Best = Counter; BestScore = Score; }
+    }
+    if (Best) Best->TryServeMeal(this, Food);
 }
 
 void ALetThemCookPlayerController::BeginPlay()
@@ -81,6 +160,7 @@ void ALetThemCookPlayerController::SetupInputComponent()
     {
         if (UEnhancedInputComponent* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent))
         {
+            EnhancedInput->BindAction(ServeCustomerAction, ETriggerEvent::Started, this, &ALetThemCookPlayerController::OnServeCustomerPressed);
             if (ToggleTabletAction) EnhancedInput->BindAction(ToggleTabletAction, ETriggerEvent::Started, this, &ALetThemCookPlayerController::ToggleTablet);
             if (CloseTabletAction) EnhancedInput->BindAction(CloseTabletAction, ETriggerEvent::Started, this, &ALetThemCookPlayerController::CloseTablet);
         }
@@ -92,6 +172,7 @@ void ALetThemCookPlayerController::SetupInputComponent()
 		// Add Input Mapping Context
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
 		{
+			Subsystem->AddMappingContext(CustomerInputContext, 0);
 			if (TabletMappingContext) Subsystem->AddMappingContext(TabletMappingContext, 1);
 			for (UInputMappingContext* CurrentContext : DefaultMappingContexts)
 			{
@@ -138,6 +219,7 @@ void ALetThemCookPlayerController::ToggleTablet()
 
     TabletScreen = SNew(STabletScreen)
         .Shop(TabletShop)
+        .Orders(TabletOrders)
         .OnCommandKeyDown(FOnKeyDown::CreateUObject(this, &ALetThemCookPlayerController::HandleTabletKeyDown))
         .OnCommandKeyUp(FOnKeyDown::CreateUObject(this, &ALetThemCookPlayerController::HandleTabletKeyUp))
         .CloseHint_UObject(this, &ALetThemCookPlayerController::GetTabletCloseHint)
@@ -174,6 +256,60 @@ void ALetThemCookPlayerController::CloseTablet()
         if (User.IsValid() && Viewport.IsValid())
             FSlateApplication::Get().SetUserFocus(User->GetUserIndex(), Viewport, EFocusCause::SetDirectly);
     }
+}
+
+void ALetThemCookPlayerController::TabletDebugOrder(FString Preset, float Seconds)
+{
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+    Preset = Preset.ToLower();
+    if ((Preset != TEXT("burger") && Preset != TEXT("custom") && Preset != TEXT("fries") && Preset != TEXT("drink") && Preset != TEXT("combo")) ||
+        !FMath::IsFinite(Seconds) || Seconds <= 0 || Seconds > 180)
+    {
+        ClientMessage(TEXT("Usage: TabletDebugOrder [burger|custom|fries|drink|combo] [seconds: 1..180]"));
+        return;
+    }
+    ServerTabletDebugOrder(Preset, Seconds);
+    if (IsLocalController())
+    {
+        if (!bTabletOpen) ToggleTablet();
+        if (TabletScreen.IsValid()) TabletScreen->ShowOrders();
+    }
+#endif
+}
+
+void ALetThemCookPlayerController::ServerTabletDebugOrder_Implementation(const FString& Preset, float Seconds)
+{
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+    if (!TabletOrders || !FMath::IsFinite(Seconds) || Seconds <= 0 || Seconds > 180) return;
+    ETabletDish Dish = ETabletDish::Burger;
+    FTabletBurgerComposition Burger;
+    int32 Payment = 160;
+    if (Preset == TEXT("custom")) { Burger.bCheese = false; Burger.bPickle = false; Payment = 125; }
+    else if (Preset == TEXT("fries")) { Dish = ETabletDish::Fries; Payment = 70; }
+    else if (Preset == TEXT("drink")) { Dish = ETabletDish::Drink; Payment = 50; }
+    else if (Preset != TEXT("burger") && Preset != TEXT("combo")) return;
+
+    FGuid Id;
+    if (Preset == TEXT("combo"))
+    {
+        TArray<FTabletDishItem> Items;
+        for (ETabletDish MealDish : {ETabletDish::Burger, ETabletDish::Fries, ETabletDish::Drink})
+        {
+            FTabletDishItem Item;
+            Item.Dish = MealDish;
+            Items.Add(Item);
+        }
+        Id = TabletOrders->SubmitMealOrder(Items, 280, Seconds);
+    }
+    else Id = TabletOrders->SubmitOrder(Dish, Burger, Payment, Seconds);
+    if (const FTabletCustomerOrder* Order = TabletOrders->FindOrder(Id))
+    {
+        const FString Message = FString::Printf(TEXT("Tablet debug order %03d added: %s, %.0f seconds"), Order->Number, *Preset, Seconds);
+        UE_LOG(LogLetThemCook, Display, TEXT("%s"), *Message);
+        ClientMessage(Message);
+    }
+    else ClientMessage(TEXT("Could not add debug order: inbox is not ready or its 32-order limit has been reached."));
+#endif
 }
 
 bool ALetThemCookPlayerController::InputKey(const FInputKeyEventArgs& Params)
@@ -239,6 +375,7 @@ void ALetThemCookPlayerController::EndPlay(const EEndPlayReason::Type EndPlayRea
     if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
     {
         if (TabletMappingContext) Subsystem->RemoveMappingContext(TabletMappingContext);
+        Subsystem->RemoveMappingContext(CustomerInputContext);
     }
     if (InteractionFeedbackWidget)
     {
