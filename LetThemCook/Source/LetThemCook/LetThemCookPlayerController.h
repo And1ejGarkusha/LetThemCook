@@ -8,6 +8,9 @@
 
 class UInputMappingContext;
 class UUserWidget;
+class UTabletShopComponent;
+class STabletScreen;
+class ATabletDevice;
 
 /**
  *  Simple first person Player Controller
@@ -24,7 +27,23 @@ public:
 	/** Constructor */
 	ALetThemCookPlayerController();
 
+public:
+    UFUNCTION(Exec)
+    void ToggleTablet();
+    void CloseTablet();
+
 protected:
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    virtual void OnUnPossess() override;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Tablet")
+    TObjectPtr<UTabletShopComponent> TabletShop;
+
+    TSharedPtr<STabletScreen> TabletScreen;
+    UPROPERTY(Transient)
+    TObjectPtr<ATabletDevice> TabletDevice;
+    bool bTabletOpen = false;
+    virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 
 	/** Input Mapping Contexts */
 	UPROPERTY(EditAnywhere, Category="Input|Input Mappings")
@@ -58,7 +77,6 @@ protected:
 
 	/** Gameplay initialization */
 	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Input mapping context setup */
 	virtual void SetupInputComponent() override;

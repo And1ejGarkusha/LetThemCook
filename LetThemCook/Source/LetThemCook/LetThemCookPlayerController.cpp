@@ -2,6 +2,14 @@
 
 
 #include "LetThemCookPlayerController.h"
+#include "TabletShopComponent.h"
+#include "STabletScreen.h"
+#include "TabletDevice.h"
+#include "Engine/World.h"
+#include "UnrealClient.h"
+#include "Components/InputComponent.h"
+#include "InputCoreTypes.h"
+#include "Framework/Application/SlateApplication.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
@@ -13,6 +21,7 @@
 
 ALetThemCookPlayerController::ALetThemCookPlayerController()
 {
+	TabletShop = CreateDefaultSubobject<UTabletShopComponent>(TEXT("TabletShop"));
 	// set the player camera manager class
 	PlayerCameraManagerClass = ALetThemCookCameraManager::StaticClass();
 	InteractionFeedbackWidgetClass = UInteractionPromptWidget::StaticClass();
@@ -30,6 +39,7 @@ void ALetThemCookPlayerController::BeginPlay()
 			InteractionFeedbackWidget->AddToPlayerScreen(20);
 		}
 	}
+
 
 	
 	// only spawn touch controls on local player controllers
@@ -52,19 +62,14 @@ void ALetThemCookPlayerController::BeginPlay()
 	}
 }
 
-void ALetThemCookPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-	if (InteractionFeedbackWidget)
-	{
-		InteractionFeedbackWidget->RemoveFromParent();
-		InteractionFeedbackWidget = nullptr;
-	}
-	Super::EndPlay(EndPlayReason);
-}
-
 void ALetThemCookPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
+    if (IsLocalPlayerController() && InputComponent)
+    {
+        InputComponent->BindKey(EKeys::T, IE_Pressed, this, &ALetThemCookPlayerController::ToggleTablet);
+        InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ALetThemCookPlayerController::CloseTablet);
+    }
 
 	// only add IMCs for local player controllers
 	if (IsLocalPlayerController())
@@ -94,4 +99,88 @@ bool ALetThemCookPlayerController::ShouldUseTouchControls() const
 {
 	// are we on a mobile platform? Should we force touch?
 	return SVirtualJoystick::ShouldDisplayTouchInterface() || bForceTouchControls;
+}
+
+
+void ALetThemCookPlayerController::ToggleTablet()
+{
+    if (!IsLocalPlayerController()) return;
+    if (bTabletOpen)
+    {
+        CloseTablet();
+        return;
+    }
+    if (!GetPawn() || !GetLocalPlayer() || !TabletShop) return;
+    if (!IsValid(TabletDevice))
+    {
+        FActorSpawnParameters Spawn;
+        Spawn.Owner = GetPawn();
+        Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        TabletDevice = GetWorld()->SpawnActor<ATabletDevice>(Spawn);
+    }
+    if (!TabletDevice) return;
+
+    TabletScreen = SNew(STabletScreen)
+        .Shop(TabletShop)
+        .OnClose(FSimpleDelegate::CreateUObject(this, &ALetThemCookPlayerController::CloseTablet));
+    TabletDevice->Equip(this, TabletScreen.ToSharedRef());
+    FlushPressedKeys();
+    bTabletOpen = true;
+    bShowMouseCursor = true;
+    SetIgnoreLookInput(true);
+    SetIgnoreMoveInput(true);
+    // Hardware hit testing forwards mouse events into the world-space display.
+    FInputModeGameAndUI Mode;
+    Mode.SetWidgetToFocus(TabletScreen);
+    Mode.SetHideCursorDuringCapture(false);
+    Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+    SetInputMode(Mode);
+}
+
+void ALetThemCookPlayerController::CloseTablet()
+{
+    if (!bTabletOpen) return;
+    bTabletOpen = false;
+    if (IsValid(TabletDevice)) TabletDevice->Stow();
+    TabletScreen.Reset();
+    FlushPressedKeys();
+    bShowMouseCursor = false;
+    SetIgnoreLookInput(false);
+    SetIgnoreMoveInput(false);
+    SetInputMode(FInputModeGameOnly());
+    if (FSlateApplication::IsInitialized())
+        FSlateApplication::Get().SetAllUserFocusToGameViewport();
+}
+
+bool ALetThemCookPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+    if (bTabletOpen)
+    {
+        if (Params.Event == IE_Pressed && (Params.Key == EKeys::T || Params.Key == EKeys::Escape))
+            CloseTablet();
+        // Slate has already handled UI events; block remaining gameplay keys (including jump).
+        return true;
+    }
+    return Super::InputKey(Params);
+}
+
+void ALetThemCookPlayerController::OnUnPossess()
+{
+    CloseTablet();
+    if (IsValid(TabletDevice)) TabletDevice->Destroy();
+    TabletDevice = nullptr;
+    Super::OnUnPossess();
+}
+
+void ALetThemCookPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (InteractionFeedbackWidget)
+    {
+        InteractionFeedbackWidget->RemoveFromParent();
+        InteractionFeedbackWidget = nullptr;
+    }
+    CloseTablet();
+    if (IsValid(TabletDevice)) TabletDevice->Destroy();
+    TabletDevice = nullptr;
+    Super::EndPlay(EndPlayReason);
 }
