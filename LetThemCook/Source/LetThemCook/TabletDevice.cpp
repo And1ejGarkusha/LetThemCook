@@ -5,6 +5,10 @@
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/GameViewportClient.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Widgets/SVirtualWindow.h"
+#include "Widgets/SViewport.h"
 #include "Engine/StaticMesh.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInterface.h"
@@ -78,6 +82,16 @@ void ATabletDevice::Equip(APlayerController* Controller, const TSharedRef<STable
     CurrentScreen->SetVisibility(EVisibility::HitTestInvisible);
     Display->SetOwnerPlayer(Controller->GetLocalPlayer());
     Display->SetSlateWidget(Screen);
+    if (FSlateApplication::IsInitialized())
+    {
+        if (const TSharedPtr<SWindow> Window = Display->GetSlateWindow())
+        {
+            FSlateApplication::Get().RegisterVirtualWindow(Window.ToSharedRef());
+            KeyboardWindow = Window;
+            if (Controller->GetLocalPlayer()->ViewportClient)
+                StaticCastSharedPtr<SVirtualWindow>(Window)->AssignParentWidget(Controller->GetLocalPlayer()->ViewportClient->GetGameViewportWidget());
+        }
+    }
     Display->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
     Display->SetVisibility(true);
     bEquipping = true;
@@ -88,9 +102,20 @@ void ATabletDevice::Equip(APlayerController* Controller, const TSharedRef<STable
 
 void ATabletDevice::Stow()
 {
+    ReleaseKeyboardWindow();
     bEquipping = false;
     Display->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     if (CurrentScreen.IsValid()) CurrentScreen->SetVisibility(EVisibility::HitTestInvisible);
+}
+
+void ATabletDevice::ReleaseKeyboardWindow()
+{
+    if (FSlateApplication::IsInitialized())
+    {
+        if (const TSharedPtr<SWindow> Window = KeyboardWindow.Pin())
+            FSlateApplication::Get().UnregisterVirtualWindow(Window.ToSharedRef());
+    }
+    KeyboardWindow.Reset();
 }
 
 FVector2D ATabletDevice::CalculateScreenSize(float Distance, float HorizontalFov, float AspectRatio)
@@ -210,6 +235,7 @@ void ATabletDevice::RestoreCharacterHands()
 
 void ATabletDevice::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    ReleaseKeyboardWindow();
     RestoreCharacterHands();
     Super::EndPlay(EndPlayReason);
 }

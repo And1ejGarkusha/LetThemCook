@@ -44,14 +44,15 @@ void UGrabbableComponent::BeginPlay()
 
 bool UGrabbableComponent::CanInteract_Implementation(UInteractorComponent* Interactor) const
 {
-    return Super::CanInteract_Implementation(Interactor) && !Holder && IsPhysicsSetupValid();
+    return Super::CanInteract_Implementation(Interactor)
+        && !Interactor->GetHeldItem() && !Holder && IsPhysicsSetupValid();
 }
 
 void UGrabbableComponent::Interact_Implementation(UInteractorComponent* Interactor)
 {
     if (GetOwner()->HasAuthority() && CanInteract(Interactor))
     {
-        Interactor->TryGrab(this);
+        if (Interactor->TryGrab(this)) OnInteracted.Broadcast(Interactor);
     }
 }
 

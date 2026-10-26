@@ -28,15 +28,11 @@ void UInteractableComponent::BeginPlay()
 
 bool UInteractableComponent::CanInteract_Implementation(UInteractorComponent* Interactor) const
 {
-    return bInteractionEnabled && IsValid(Interactor) && !Interactor->GetHeldItem();
+    return bInteractionEnabled && IsValid(Interactor) && IsValid(GetOwner());
 }
 
 void UInteractableComponent::Interact_Implementation(UInteractorComponent* Interactor)
 {
-    if (GetOwner()->HasAuthority() && CanInteract(Interactor))
-    {
-        OnInteracted.Broadcast(Interactor);
-    }
 }
 
 void UInteractableComponent::SetInteractionEnabled(bool bEnabled)

@@ -2,19 +2,14 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Food/Data/FoodProductDefinition.h"
 #include "TabletShopComponent.generated.h"
 
-USTRUCT(BlueprintType)
-struct FTabletProduct
-{
-    GENERATED_BODY()
-
-    UPROPERTY(EditAnywhere, BlueprintReadOnly) FName Id;
-    UPROPERTY(EditAnywhere, BlueprintReadOnly) FText Name;
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(ClampMin="1")) int32 Price = 1;
-};
+class UFoodCatalog;
+class ADeliveryBox;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FTabletPurchaseResult, bool, const FText&);
+DECLARE_MULTICAST_DELEGATE(FTabletCatalogChanged);
 
 USTRUCT()
 struct FTabletOrderItem
@@ -32,18 +27,26 @@ class LETTHEMCOOK_API UTabletShopComponent : public UActorComponent
 public:
     UTabletShopComponent();
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-    const TArray<FTabletProduct>& GetProducts() const { return Products; }
+    UFUNCTION(BlueprintPure, Category="Tablet")
+    const TArray<FFoodProductDefinition>& GetProducts() const;
+    UFUNCTION(BlueprintPure, Category="Tablet")
     int32 GetBalance() const { return Balance; }
+    UFUNCTION(BlueprintPure, Category="Tablet")
     const FText& GetLastPurchaseMessage() const { return LastPurchaseMessage; }
+    UFUNCTION(BlueprintPure, Category="Tablet")
     bool WasLastPurchaseSuccessful() const { return bLastPurchaseSuccessful; }
     void Purchase(FName ProductId, int32 Quantity);
     void PurchaseCart(const TArray<FTabletOrderItem>& Items);
     FTabletPurchaseResult OnPurchaseResult;
+    FTabletCatalogChanged OnCatalogChanged;
 
 protected:
     virtual void BeginPlay() override;
     UPROPERTY(EditDefaultsOnly, Category="Tablet", meta=(ClampMin="0")) int32 StartingBalance = 500;
-    UPROPERTY(EditDefaultsOnly, Replicated, Category="Tablet") TArray<FTabletProduct> Products;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, ReplicatedUsing=OnRep_Catalog, Category="Tablet")
+    TObjectPtr<UFoodCatalog> Catalog;
+    UPROPERTY(EditDefaultsOnly, Category="Delivery")
+    TSubclassOf<ADeliveryBox> DeliveryBoxClass;
     UPROPERTY(Replicated) int32 Balance = 0;
     UFUNCTION(Server, Reliable) void ServerPurchase(FName ProductId, int32 Quantity);
     UFUNCTION(Server, Reliable) void ServerPurchaseCart(const TArray<FTabletOrderItem>& Items);
@@ -52,9 +55,11 @@ protected:
     UPROPERTY() TObjectPtr<class UTexture2D> UpgradesArtwork;
     UFUNCTION(Client, Reliable) void ClientPurchaseResult(bool bSuccess, const FText& Message);
 private:
+    UFUNCTION()
+    void OnRep_Catalog();
+
     FText LastPurchaseMessage;
     bool bLastPurchaseSuccessful = true;
     double LastPurchaseTime = -1.0;
-    FVector FallbackDeliveryLocation = FVector::ZeroVector;
-    bool bHasFallbackLocation = false;
+    bool bProcessingOrder = false;
 };

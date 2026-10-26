@@ -1,11 +1,11 @@
 #include "TabletShopComponent.h"
-#include "TabletDelivery.h"
+#include "Delivery/DeliveryBox.h"
+#include "Delivery/DeliveryOrder.h"
+#include "Players/LetThemCookPlayerState.h"
+#include "Food/Data/FoodCatalog.h"
 #include "Engine/World.h"
-#include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
-#include "GameFramework/GameStateBase.h"
-#include "GameFramework/PlayerState.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/Texture2D.h"
 #include "UObject/ConstructorHelpers.h"
@@ -18,21 +18,21 @@ UTabletShopComponent::UTabletShopComponent()
     UpgradesArtwork = Upgrades.Object;
     PrimaryComponentTick.bCanEverTick = false;
     SetIsReplicatedByDefault(true);
-    auto Add = [this](const TCHAR* Id, const FText& Name, int32 Price)
-    {
-        FTabletProduct Product;
-        Product.Id = FName(Id); Product.Name = Name; Product.Price = Price;
-        Products.Add(Product);
-    };
-    Add(TEXT("Bun"), NSLOCTEXT("Tablet", "Bun", "Булка"), 5);
-    Add(TEXT("Patty"), NSLOCTEXT("Tablet", "Patty", "Котлета"), 15);
-    Add(TEXT("Cheese"), NSLOCTEXT("Tablet", "Cheese", "Сыр"), 7);
-    Add(TEXT("Sauce"), NSLOCTEXT("Tablet", "Sauce", "Соус"), 4);
-    Add(TEXT("Tomato"), NSLOCTEXT("Tablet", "Tomato", "Нарезанные помидоры"), 6);
-    Add(TEXT("Pickle"), NSLOCTEXT("Tablet", "Pickle", "Нарезанные огурцы"), 6);
-    Add(TEXT("Sausage"), NSLOCTEXT("Tablet", "Sausage", "Сосиска"), 12);
-    Add(TEXT("Fries"), NSLOCTEXT("Tablet", "Fries", "Заготовка картофеля"), 10);
-    Add(TEXT("Drink"), NSLOCTEXT("Tablet", "Drink", "Основа напитка"), 8);
+    static ConstructorHelpers::FObjectFinder<UFoodCatalog> FoodCatalog(TEXT("/Game/DataAssets/Food/DA_FoodCatalog.DA_FoodCatalog"));
+    Catalog = FoodCatalog.Object;
+    static ConstructorHelpers::FClassFinder<ADeliveryBox> BoxBlueprint(TEXT("/Game/Delivery/Blueprints/BP_DeliveryBox"));
+    DeliveryBoxClass = BoxBlueprint.Class;
+}
+
+const TArray<FFoodProductDefinition>& UTabletShopComponent::GetProducts() const
+{
+    static const TArray<FFoodProductDefinition> EmptyProducts;
+    return IsValid(Catalog) ? Catalog->GetProducts() : EmptyProducts;
+}
+
+void UTabletShopComponent::OnRep_Catalog()
+{
+    OnCatalogChanged.Broadcast();
 }
 
 void UTabletShopComponent::BeginPlay()
@@ -45,7 +45,7 @@ void UTabletShopComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(UTabletShopComponent, Balance);
-    DOREPLIFETIME(UTabletShopComponent, Products);
+    DOREPLIFETIME(UTabletShopComponent, Catalog);
 }
 
 void UTabletShopComponent::Purchase(FName ProductId, int32 Quantity)
@@ -66,8 +66,17 @@ void UTabletShopComponent::PurchaseCart(const TArray<FTabletOrderItem>& Items)
 
 void UTabletShopComponent::ServerPurchaseCart_Implementation(const TArray<FTabletOrderItem>& Items)
 {
+    if (!GetOwner() || !GetOwner()->HasAuthority()) return;
+    if (bProcessingOrder)
+    {
+        ClientPurchaseResult(false, NSLOCTEXT("Tablet", "OrderPending", "Предыдущий заказ ещё обрабатывается."));
+        return;
+    }
+    TGuardValue<bool> OrderGuard(bProcessingOrder, true);
+    const TArray<FFoodProductDefinition>& Products = GetProducts();
     int64 Cost = 0;
     TSet<FName> Seen;
+    TArray<FName> OrderedBoxes;
     if (Items.IsEmpty() || Items.Num() > Products.Num())
     {
         ClientPurchaseResult(false, NSLOCTEXT("Tablet", "InvalidCart", "Недопустимый состав заказа."));
@@ -75,7 +84,7 @@ void UTabletShopComponent::ServerPurchaseCart_Implementation(const TArray<FTable
     }
     for (const FTabletOrderItem& Item : Items)
     {
-        const FTabletProduct* Product = Products.FindByPredicate([&Item](const FTabletProduct& P) { return P.Id == Item.ProductId; });
+        const FFoodProductDefinition* Product = Products.FindByPredicate([&Item](const FFoodProductDefinition& P) { return P.Id == Item.ProductId; });
         if (!Product || Product->Price <= 0 || Item.Quantity < 1 || Item.Quantity > 100 || Seen.Contains(Item.ProductId))
         {
             ClientPurchaseResult(false, NSLOCTEXT("Tablet", "InvalidOrder", "Недопустимый заказ."));
@@ -83,6 +92,7 @@ void UTabletShopComponent::ServerPurchaseCart_Implementation(const TArray<FTable
         }
         Seen.Add(Item.ProductId);
         Cost += int64(Product->Price) * Item.Quantity;
+        for (int32 BoxIndex = 0; BoxIndex < Item.Quantity; ++BoxIndex) OrderedBoxes.Add(Item.ProductId);
     }
     if (Cost > Balance)
     {
@@ -103,63 +113,35 @@ void UTabletShopComponent::ServerPurchaseCart_Implementation(const TArray<FTable
         ClientPurchaseResult(false, NSLOCTEXT("Tablet", "NoPawn", "Доставка недоступна: нет персонажа."));
         return;
     }
-    FVector Location;
-    bool bFoundPoint = false;
-    const AGameStateBase* State = GetWorld()->GetGameState();
-    const int32 Slot = State ? State->PlayerArray.IndexOfByKey(Controller->PlayerState) : INDEX_NONE;
-    for (TActorIterator<ATabletDeliveryPoint> It(GetWorld()); It; ++It)
+    const ALetThemCookPlayerState* PlayerState = Controller->GetPlayerState<ALetThemCookPlayerState>();
+    if (!PlayerState || PlayerState->GetDeliverySlot() == 0)
     {
-        if (It->PlayerSlot == Slot)
-        {
-            Location = It->GetActorLocation() + FVector(0, 0, 45);
-            bFoundPoint = true;
-            break;
-        }
+        ClientPurchaseResult(false, NSLOCTEXT("Tablet", "NoDeliverySlot", "Игроку не назначен номер для доставки."));
+        return;
     }
-    if (!bFoundPoint)
+
+    const EDeliveryOrderResult Result = FDeliveryOrder::TryDeliver(GetWorld(), Catalog, DeliveryBoxClass,
+        PlayerState->GetDeliverySlot(), OrderedBoxes);
+    switch (Result)
     {
-        // Prototype fallback: first order establishes a fixed delivery area.
-        if (!bHasFallbackLocation)
-        {
-            FHitResult Floor;
-            const FVector Probe = Pawn->GetActorLocation() + Pawn->GetActorForwardVector() * 250;
-            FCollisionQueryParams Params;
-            Params.AddIgnoredActor(Pawn);
-            if (!GetWorld()->LineTraceSingleByChannel(Floor, Probe, Probe - FVector(0, 0, 1000), ECC_Visibility, Params))
-            {
-                ClientPurchaseResult(false, NSLOCTEXT("Tablet", "NoFloor", "Нет места доставки. Добавьте TabletDeliveryPoint на карту."));
-                return;
-            }
-            FallbackDeliveryLocation = Floor.ImpactPoint + FVector(0, 0, 25);
-            bHasFallbackLocation = true;
-        }
-        Location = FallbackDeliveryLocation;
+    case EDeliveryOrderResult::NoPallets:
+        ClientPurchaseResult(false, NSLOCTEXT("Tablet", "NoPallets", "На карте нет ваших паллет для доставки."));
+        return;
+    case EDeliveryOrderResult::NotEnoughSpace:
+        ClientPurchaseResult(false, NSLOCTEXT("Tablet", "PalletsFull", "Недостаточно свободных паллет для всего заказа."));
+        return;
+    case EDeliveryOrderResult::InvalidProduct:
+        ClientPurchaseResult(false, NSLOCTEXT("Tablet", "InvalidDeliveryProduct", "Не удалось подготовить коробки из каталога."));
+        return;
+    case EDeliveryOrderResult::SpawnFailed:
+        ClientPurchaseResult(false, NSLOCTEXT("Tablet", "DeliveryCancelled", "Место доставки занято. Заказ отменён без списания денег."));
+        return;
+    case EDeliveryOrderResult::Success:
+        break;
     }
-    FActorSpawnParameters Spawn;
-    Spawn.Owner = Controller;
-    Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
-    TArray<ATabletDeliveryBox*> Deliveries;
-    for (const FTabletOrderItem& Item : Items)
-    {
-        ATabletDeliveryBox* Box = nullptr;
-        for (int32 Index = 0; Index < 25 && !Box; ++Index)
-        {
-            const FVector Offset((Index % 5 - 2) * 55, (Index / 5 - 2) * 55, 0);
-            Box = GetWorld()->SpawnActor<ATabletDeliveryBox>(Location + Offset, FRotator::ZeroRotator, Spawn);
-        }
-        if (!Box)
-        {
-            // Atomic delivery: undo partial spawns before returning an error.
-            for (ATabletDeliveryBox* Created : Deliveries) Created->Destroy();
-            ClientPurchaseResult(false, NSLOCTEXT("Tablet", "Full", "Место доставки занято. Освободите площадку."));
-            return;
-        }
-        const FTabletProduct& Product = *Products.FindByPredicate([&Item](const FTabletProduct& P) { return P.Id == Item.ProductId; });
-        Box->Initialize(Product.Id, Product.Name, Item.Quantity);
-        Deliveries.Add(Box);
-    }
+
     Balance -= int32(Cost);
-    ClientPurchaseResult(true, FText::Format(NSLOCTEXT("Tablet", "CartDelivered", "Заказ доставлен. Коробок: {0}. Списано {1}."), FText::AsNumber(Deliveries.Num()), FText::AsNumber(Cost)));
+    ClientPurchaseResult(true, FText::Format(NSLOCTEXT("Tablet", "CartDelivered", "Заказ доставлен. Коробок: {0}. Списано {1}."), FText::AsNumber(OrderedBoxes.Num()), FText::AsNumber(Cost)));
 }
 
 void UTabletShopComponent::ClientPurchaseResult_Implementation(bool bSuccess, const FText& Message)

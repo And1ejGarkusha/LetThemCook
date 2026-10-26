@@ -16,6 +16,7 @@ class ALetThemCookGameMode : public AGameModeBase
 
 public:
 	ALetThemCookGameMode();
+    virtual void PostLogin(APlayerController* NewPlayer) override;
 };
 
 

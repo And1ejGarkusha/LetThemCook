@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Input/Reply.h"
 #include "LetThemCookPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -11,6 +12,9 @@ class UUserWidget;
 class UTabletShopComponent;
 class STabletScreen;
 class ATabletDevice;
+class UInputAction;
+struct FGeometry;
+struct FKeyEvent;
 
 /**
  *  Simple first person Player Controller
@@ -32,6 +36,9 @@ public:
     void ToggleTablet();
     void CloseTablet();
 
+    UFUNCTION(BlueprintPure, Category="Tablet")
+    bool IsTabletOpen() const { return bTabletOpen; }
+
 protected:
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void OnUnPossess() override;
@@ -44,6 +51,15 @@ protected:
     TObjectPtr<ATabletDevice> TabletDevice;
     bool bTabletOpen = false;
     virtual bool InputKey(const FInputKeyEventArgs& Params) override;
+
+    UPROPERTY(EditDefaultsOnly, Category="Input|Tablet")
+    TObjectPtr<UInputAction> ToggleTabletAction;
+
+    UPROPERTY(EditDefaultsOnly, Category="Input|Tablet")
+    TObjectPtr<UInputAction> CloseTabletAction;
+
+    UPROPERTY(EditDefaultsOnly, Category="Input|Tablet")
+    TObjectPtr<UInputMappingContext> TabletMappingContext;
 
 	/** Input Mapping Contexts */
 	UPROPERTY(EditAnywhere, Category="Input|Input Mappings")
@@ -83,4 +99,11 @@ protected:
 
 	/** Returns true if the player should use UMG touch controls */
 	bool ShouldUseTouchControls() const;
+
+private:
+    bool IsTabletCommandKey(FKey Key) const;
+    FReply ForwardTabletKey(const FKeyEvent& Event, EInputEvent InputEvent);
+    FReply HandleTabletKeyDown(const FGeometry& Geometry, const FKeyEvent& Event);
+    FReply HandleTabletKeyUp(const FGeometry& Geometry, const FKeyEvent& Event);
+    FText GetTabletCloseHint() const;
 };

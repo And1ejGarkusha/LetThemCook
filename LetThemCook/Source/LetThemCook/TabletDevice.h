@@ -10,6 +10,7 @@ class STabletScreen;
 class APlayerController;
 class UPoseableMeshComponent;
 class USkeletalMeshComponent;
+class SWindow;
 
 /** World-space Slate display with ordinary mouse hit testing. */
 UCLASS()
@@ -40,6 +41,7 @@ public:
 private:
     TWeakObjectPtr<APlayerController> ViewingController;
     TSharedPtr<STabletScreen> CurrentScreen;
+    TWeakPtr<SWindow> KeyboardWindow;
     float EquipProgress = 0.0f;
     bool bEquipping = false;
     FIntPoint CachedDrawSize = FIntPoint::ZeroValue;
@@ -53,4 +55,5 @@ private:
     void PoseHands(const FVector2D& ScreenSize);
     void RestoreCharacterHands();
     void UpdatePose();
+    void ReleaseKeyboardWindow();
 };

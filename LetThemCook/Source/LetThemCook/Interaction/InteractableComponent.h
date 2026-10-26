@@ -7,8 +7,7 @@
 class UInteractorComponent;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FInteractionExecuted, UInteractorComponent*, Interactor);
 
-/** Add one Interactable OR Grabbable to an actor. Gameplay events run on the server. */
-UCLASS(Blueprintable, ClassGroup=(Interaction), meta=(BlueprintSpawnableComponent))
+UCLASS(Abstract, Blueprintable, ClassGroup=(Interaction))
 class LETTHEMCOOK_API UInteractableComponent : public UActorComponent
 {
     GENERATED_BODY()
